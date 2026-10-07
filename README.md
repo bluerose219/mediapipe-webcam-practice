@@ -10,6 +10,12 @@
 | 4 | 커스텀 제스처 학습 | `collect_gestures.py` → `train_gestures.py` → `custom_gesture_webcam.py` | `models/custom_gesture.joblib` | 내가 만든 제스처 (heart, none, ok, rock) |
 | 5 | 웹 제스처 이펙트 | `web/index.html` | `web/gesture_model.json` | ok → 불꽃놀이, rock → 손끝 불, heart → 꽃 |
 
+## 🌐 웹 데모
+
+**https://bluerose219.github.io/mediapipe-webcam-practice/**
+
+Chrome에서 열고 카메라를 허용한 뒤 👌 ok(불꽃놀이), ✊ rock(손끝 불), 🫶 heart(꽃)를 해 보세요. `web` 폴더가 바뀌어 push되면 GitHub Actions(`.github/workflows/pages.yml`)가 자동으로 다시 배포합니다.
+
 ## 파일 구성
 
 ```
