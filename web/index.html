@@ -34,6 +34,14 @@
   .row.active .name { font-weight: 700; }
   #hint { margin: 12px 0 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
 
+  #gate { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    width: min(440px, calc(100vw - 32px)); text-align: center; }
+  #start { font: inherit; font-size: 18px; font-weight: 700; color: #111; background: #ffd84d;
+    border: 0; border-radius: 999px; padding: 14px 28px; cursor: pointer;
+    box-shadow: 0 6px 24px rgba(255, 216, 77, 0.35); }
+  #start:hover { filter: brightness(1.05); }
+  #start:disabled { opacity: 0.6; cursor: wait; }
+  #msg { margin: 14px 0 0; font-size: 14px; line-height: 1.6; color: var(--text); }
   #big { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
     font-size: clamp(28px, 6vw, 56px); font-weight: 800; letter-spacing: 0.04em;
     text-shadow: 0 2px 18px rgba(0,0,0,0.6); pointer-events: none; transition: color 120ms; }
@@ -53,6 +61,10 @@
   <p id="hint">👌 <b>ok</b> → 불꽃놀이<br>✊ <b>rock</b> → 손끝에서 불<br>🫶 <b>heart</b> → 꽃</p>
 </div>
 <div id="big"></div>
+<div id="gate">
+  <button id="start" hidden>📷 카메라 켜기</button>
+  <p id="msg"></p>
+</div>
 
 <script type="module">
 import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.0/vision_bundle.mjs";
@@ -379,17 +391,43 @@ async function main() {
       numHands: 2,
     });
 
-    statusEl.textContent = "카메라 켜는 중…";
+  } catch (err) {
+    console.error(err);
+    statusEl.textContent = `모델 불러오기 오류: ${err.message}`;
+    return;
+  }
+  // 카메라 권한 창은 사용자가 버튼을 눌렀을 때 더 확실하게 뜸
+  statusEl.textContent = "준비 완료";
+  startBtn.hidden = false;
+}
+
+const startBtn = document.getElementById("start");
+const msgEl = document.getElementById("msg");
+const CAMERA_ERRORS = {
+  NotAllowedError: "카메라 권한이 막혀 있습니다. 주소창 왼쪽 아이콘(🔒 또는 카메라 모양) → 카메라 → 허용으로 바꾼 뒤 새로고침하세요.",
+  NotReadableError: "다른 프로그램(Python 웹캠 코드, Zoom, Teams 등)이 카메라를 쓰고 있습니다. 그 프로그램을 끄고 다시 눌러 주세요.",
+  NotFoundError: "연결된 카메라를 찾지 못했습니다.",
+  OverconstrainedError: "카메라가 요청한 해상도를 지원하지 않습니다.",
+};
+
+async function startCamera() {
+  startBtn.disabled = true;
+  msgEl.textContent = "브라우저 위쪽에 뜨는 카메라 권한 요청에서 '허용'을 눌러 주세요.";
+  try {
     video.srcObject = await navigator.mediaDevices.getUserMedia({
-      video: { width: 1280, height: 720 }, audio: false });
+      video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
     await video.play();
+    startBtn.hidden = true;
+    msgEl.textContent = "";
     statusEl.textContent = `인식 중 · ${model.classes.join(", ")}`;
     requestAnimationFrame(loop);
   } catch (err) {
     console.error(err);
-    statusEl.textContent = `오류: ${err.message}`;
+    msgEl.textContent = CAMERA_ERRORS[err.name] || `카메라 오류: ${err.name} ${err.message}`;
+    startBtn.disabled = false;
   }
 }
+startBtn.addEventListener("click", startCamera);
 main();
 </script>
 </body>
