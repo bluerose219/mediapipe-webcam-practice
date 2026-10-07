@@ -58,7 +58,7 @@
   <h1>커스텀 제스처 이펙트</h1>
   <p id="status">모델 불러오는 중…</p>
   <div id="bars"></div>
-  <p id="hint">👌 <b>ok</b> → 불꽃놀이<br>✊ <b>rock</b> → 손끝에서 불<br>🫶 <b>heart</b> → 꽃</p>
+  <p id="hint">👌 <b>ok</b> → 불꽃놀이<br>✊ <b>빵</b> → 손끝에서 불<br>🫶 <b>heart</b> → 꽃</p>
 </div>
 <div id="big"></div>
 <div id="gate">
@@ -72,6 +72,9 @@ import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@m
 const THRESHOLD = 0.7;      // 이 확률 이상일 때만 제스처로 인정
 const STABLE_FRAMES = 4;    // 같은 제스처가 연속 몇 프레임 나와야 효과를 낼지
 const COLORS = { rock: "#ffb347", heart: "#ff6fa5", ok: "#6fd3ff", none: "#8a93a3" };
+// 화면에 보여 줄 이름 (모델 속 라벨은 그대로 두고 표시만 바꿈)
+const DISPLAY = { rock: "빵" };
+const show = c => DISPLAY[c] || c;
 const HAND_CONNECTIONS = [
   [0,1],[1,2],[2,3],[3,4], [0,5],[5,6],[6,7],[7,8], [5,9],[9,10],[10,11],[11,12],
   [9,13],[13,14],[14,15],[15,16], [13,17],[17,18],[18,19],[19,20], [0,17],
@@ -124,7 +127,7 @@ const barsEl = document.getElementById("bars");
 function buildBars() {
   barsEl.innerHTML = model.classes.map(c => `
     <div class="row" data-c="${c}">
-      <span class="name">${c}</span>
+      <span class="name">${show(c)}</span>
       <span class="bar"><i style="background:${COLORS[c] || "#ccc"}"></i></span>
       <span class="pct">0%</span>
     </div>`).join("");
@@ -357,7 +360,7 @@ function loop(now) {
   else stable = { label: bestLabel, count: bestLabel ? 1 : 0 };
   const active = stable.count >= STABLE_FRAMES ? stable.label : null;
 
-  bigEl.textContent = active && active !== "none" ? active.toUpperCase() : "";
+  bigEl.textContent = active && active !== "none" ? show(active).toUpperCase() : "";
   bigEl.style.color = COLORS[active] || "#fff";
 
   if (active === "ok" && now - lastFire > 450) {
@@ -419,7 +422,7 @@ async function startCamera() {
     await video.play();
     startBtn.hidden = true;
     msgEl.textContent = "";
-    statusEl.textContent = `인식 중 · ${model.classes.join(", ")}`;
+    statusEl.textContent = `인식 중 · ${model.classes.map(show).join(", ")}`;
     requestAnimationFrame(loop);
   } catch (err) {
     console.error(err);
