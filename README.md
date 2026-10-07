@@ -230,10 +230,6 @@ base_options = python.BaseOptions(model_asset_buffer=model_data)
 | 시각 | 프롬프트 | 결과 |
 |---|---|---|
 | 15:33 | `https://developers.google.com/edge/mediapipe/solutions/vision/face_landmarker 해당하는 라이브러리 받고 파이썬 실행 코드 webcam 기반으로 짜줘 클로인크롬써서 다운받아` | Chrome으로 `face_landmarker.task` 다운로드, `face_landmarker_webcam.py` 작성 |
-| 15:37 | `웹캡이 안 열려` | 원인이 한글 경로임을 찾아 `model_asset_buffer` 방식으로 수정 |
-| 15:39 | `이제 잘 된다` | 확인 |
-| 15:39 | `깃 허브에 올려줘` | 비공개 저장소 생성 후 push (모델 파일 포함) |
-| 15:41 | `README.md 오늘 들은 수업 내용 정리해서 올려줘` | 수업 정리 README 작성 |
 | 15:43 | `같이 올려주고 내용도 readme에 같이 정리해줘 그리고 readme에 사용한 프롬프트도 다 정리해줘` | 손·제스처 코드와 모델 추가, README에 실습 1·2와 이 프롬프트 목록 추가 |
 
 ### 프롬프트 작성 팁 (오늘 써 보고 느낀 점)
