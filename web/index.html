@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gesture Effects</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --panel: rgba(16, 19, 27, 0.78);
+    --text: #f2f4f8;
+    --muted: #9aa3b2;
+    --rock: #ffb347;
+    --heart: #ff6fa5;
+    --ok: #6fd3ff;
+    --none: #8a93a3;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: "Pretendard", "Malgun Gothic", system-ui, sans-serif; overflow: hidden; }
+  #stage { position: fixed; inset: 0; }
+  #stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #video { display: none; }
+
+  #panel { position: fixed; top: 16px; left: 16px; width: min(280px, calc(100vw - 32px));
+    background: var(--panel); backdrop-filter: blur(8px); border-radius: 14px; padding: 14px 16px; }
+  #panel h1 { margin: 0 0 4px; font-size: 15px; font-weight: 700; letter-spacing: 0.02em; }
+  #status { margin: 0 0 12px; font-size: 12px; color: var(--muted); }
+  .row { display: grid; grid-template-columns: 52px 1fr 40px; align-items: center; gap: 8px;
+    font-size: 13px; margin: 6px 0; }
+  .bar { height: 8px; background: rgba(255,255,255,0.08); border-radius: 4px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0; border-radius: 4px; transition: width 80ms linear; }
+  .pct { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .row.active .name { font-weight: 700; }
+  #hint { margin: 12px 0 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+  #big { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+    font-size: clamp(28px, 6vw, 56px); font-weight: 800; letter-spacing: 0.04em;
+    text-shadow: 0 2px 18px rgba(0,0,0,0.6); pointer-events: none; transition: color 120ms; }
+</style>
+</head>
+<body>
+<video id="video" playsinline muted></video>
+<div id="stage">
+  <canvas id="cam"></canvas>
+  <canvas id="fx"></canvas>
+</div>
+
+<div id="panel">
+  <h1>커스텀 제스처 이펙트</h1>
+  <p id="status">모델 불러오는 중…</p>
+  <div id="bars"></div>
+  <p id="hint">👌 <b>ok</b> → 불꽃놀이<br>✊ <b>rock</b> → 손끝에서 불<br>🫶 <b>heart</b> → 꽃</p>
+</div>
+<div id="big"></div>
+
+<script type="module">
+import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.0/vision_bundle.mjs";
+
+const THRESHOLD = 0.7;      // 이 확률 이상일 때만 제스처로 인정
+const STABLE_FRAMES = 4;    // 같은 제스처가 연속 몇 프레임 나와야 효과를 낼지
+const COLORS = { rock: "#ffb347", heart: "#ff6fa5", ok: "#6fd3ff", none: "#8a93a3" };
+const HAND_CONNECTIONS = [
+  [0,1],[1,2],[2,3],[3,4], [0,5],[5,6],[6,7],[7,8], [5,9],[9,10],[10,11],[11,12],
+  [9,13],[13,14],[14,15],[15,16], [13,17],[17,18],[18,19],[19,20], [0,17],
+];
+
+const video = document.getElementById("video");
+const cam = document.getElementById("cam"), camCtx = cam.getContext("2d");
+const fx = document.getElementById("fx"), fxCtx = fx.getContext("2d");
+const statusEl = document.getElementById("status");
+const bigEl = document.getElementById("big");
+const mirror = document.createElement("canvas"), mirrorCtx = mirror.getContext("2d");
+
+// ---------- 학습한 모델 (sklearn StandardScaler + MLP) ----------
+let model;
+
+function predict(features) {
+  let h = features.map((v, i) => (v - model.mean[i]) / model.scale[i]);
+  model.weights.forEach((W, layer) => {
+    const b = model.biases[layer];
+    const out = b.slice();
+    for (let i = 0; i < h.length; i++) {
+      const hi = h[i];
+      if (hi === 0) continue;
+      const row = W[i];
+      for (let j = 0; j < out.length; j++) out[j] += hi * row[j];
+    }
+    const last = layer === model.weights.length - 1;
+    h = last ? out : out.map(v => Math.max(0, v));  // 은닉층 relu
+  });
+  const m = Math.max(...h);                          // 출력층 softmax
+  const e = h.map(v => Math.exp(v - m));
+  const s = e.reduce((a, b) => a + b, 0);
+  return e.map(v => v / s);
+}
+
+// Python의 gesture_common.landmarks_to_features와 똑같이 계산해야 함
+function landmarksToFeatures(landmarks, handedness) {
+  const w = landmarks[0];
+  const pts = landmarks.map(p => [p.x - w.x, p.y - w.y, p.z - w.z]);
+  if (handedness === "Left") pts.forEach(p => { p[0] = -p[0]; });
+  let scale = 0;
+  for (const p of pts) scale = Math.max(scale, Math.hypot(p[0], p[1]));
+  const out = [];
+  for (const p of pts) for (const v of p) out.push(scale > 0 ? v / scale : v);
+  return out;
+}
+
+// ---------- 확률 막대 ----------
+const barsEl = document.getElementById("bars");
+function buildBars() {
+  barsEl.innerHTML = model.classes.map(c => `
+    <div class="row" data-c="${c}">
+      <span class="name">${c}</span>
+      <span class="bar"><i style="background:${COLORS[c] || "#ccc"}"></i></span>
+      <span class="pct">0%</span>
+    </div>`).join("");
+}
+function updateBars(proba) {
+  const best = proba ? proba.indexOf(Math.max(...proba)) : -1;
+  model.classes.forEach((c, i) => {
+    const row = barsEl.children[i];
+    const p = proba ? proba[i] : 0;
+    row.querySelector("i").style.width = `${(p * 100).toFixed(0)}%`;
+    row.querySelector(".pct").textContent = `${(p * 100).toFixed(0)}%`;
+    row.classList.toggle("active", i === best && p >= THRESHOLD);
+  });
+}
+
+// ---------- 이펙트: 불꽃놀이 ----------
+const particles = [];
+const flames = [];
+const flowers = [];
+const petals = [];
+
+function firework(x, y) {
+  const hue = Math.random() * 360;
+  const n = 90 + Math.floor(Math.random() * 50);
+  const speed = 4 + Math.random() * 4;
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 + Math.random() * 0.1;
+    const v = speed * (0.5 + Math.random() * 0.6);
+    particles.push({
+      x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v,
+      life: 1, decay: 0.012 + Math.random() * 0.012,
+      color: `hsl(${hue + (Math.random() * 40 - 20)}, 100%, ${60 + Math.random() * 20}%)`,
+      size: 2 + Math.random() * 2,
+    });
+  }
+  // 가운데 반짝임
+  particles.push({ x, y, vx: 0, vy: 0, life: 1, decay: 0.08, color: "#fff", size: 30, flash: true });
+}
+
+// ---------- 이펙트: 손끝 불 ----------
+function flame(x, y) {
+  const s = devicePixelRatio;
+  for (let i = 0; i < 3; i++) {
+    flames.push({
+      x: x + (Math.random() - 0.5) * 8 * s, y: y + (Math.random() - 0.5) * 6 * s,
+      vx: (Math.random() - 0.5) * 0.8 * s, vy: -(1.5 + Math.random() * 2) * s,
+      life: 1, decay: 0.03 + Math.random() * 0.03,
+      size: (10 + Math.random() * 8) * s,
+    });
+  }
+}
+
+// ---------- 이펙트: 꽃 ----------
+function bloom(x, y) {
+  const hue = [330, 345, 300, 20, 50][Math.floor(Math.random() * 5)];
+  flowers.push({
+    x: x + (Math.random() - 0.5) * 160, y: y + (Math.random() - 0.5) * 120,
+    r: 0, maxR: 26 + Math.random() * 26, petals: 5 + Math.floor(Math.random() * 3),
+    rot: Math.random() * Math.PI, spin: (Math.random() - 0.5) * 0.02,
+    hue, life: 1, age: 0,
+  });
+  for (let i = 0; i < 3; i++) {
+    petals.push({
+      x: x + (Math.random() - 0.5) * 200, y: y - Math.random() * 60,
+      vx: (Math.random() - 0.5) * 1.5, vy: -1 - Math.random() * 1.5,
+      rot: Math.random() * Math.PI, vr: (Math.random() - 0.5) * 0.1,
+      size: 6 + Math.random() * 6, hue, life: 1,
+    });
+  }
+}
+
+function drawFlower(ctx, f) {
+  ctx.save();
+  ctx.translate(f.x, f.y);
+  ctx.rotate(f.rot);
+  ctx.globalAlpha = Math.min(1, f.life * 1.5);
+  for (let i = 0; i < f.petals; i++) {
+    ctx.rotate((Math.PI * 2) / f.petals);
+    ctx.beginPath();
+    ctx.ellipse(f.r * 0.55, 0, f.r * 0.55, f.r * 0.3, 0, 0, Math.PI * 2);
+    ctx.fillStyle = `hsl(${f.hue}, 85%, 72%)`;
+    ctx.fill();
+    ctx.strokeStyle = `hsla(${f.hue}, 70%, 50%, 0.5)`;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+  ctx.beginPath();
+  ctx.arc(0, 0, f.r * 0.22, 0, Math.PI * 2);
+  ctx.fillStyle = "#ffd84d";
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawPetal(ctx, p) {
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.rotate(p.rot);
+  ctx.globalAlpha = p.life;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, p.size, p.size * 0.5, 0, 0, Math.PI * 2);
+  ctx.fillStyle = `hsl(${p.hue}, 85%, 78%)`;
+  ctx.fill();
+  ctx.restore();
+}
+
+function stepEffects() {
+  // 불꽃은 잔상이 남도록 살짝만 지움
+  fxCtx.globalCompositeOperation = "destination-out";
+  fxCtx.fillStyle = "rgba(0,0,0,0.25)";
+  fxCtx.fillRect(0, 0, fx.width, fx.height);
+  fxCtx.globalCompositeOperation = "lighter";
+
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy;
+    p.vx *= 0.985; p.vy = p.vy * 0.985 + 0.06;  // 공기 저항 + 중력
+    p.life -= p.decay;
+    if (p.life <= 0) { particles.splice(i, 1); continue; }
+    fxCtx.globalAlpha = p.life;
+    fxCtx.fillStyle = p.color;
+    fxCtx.beginPath();
+    fxCtx.arc(p.x, p.y, p.flash ? p.size * (1.5 - p.life) : p.size, 0, Math.PI * 2);
+    fxCtx.fill();
+  }
+
+  // 불: 위로 올라가며 작아지고, 흰색 → 노랑 → 주황 → 빨강으로 식어 감
+  for (let i = flames.length - 1; i >= 0; i--) {
+    const f = flames[i];
+    f.x += f.vx + Math.sin(f.y * 0.05) * 0.3;
+    f.y += f.vy;
+    f.vy *= 0.98;
+    f.life -= f.decay;
+    if (f.life <= 0) { flames.splice(i, 1); continue; }
+    const r = f.size * (0.3 + f.life * 0.7);
+    const g = fxCtx.createRadialGradient(f.x, f.y, 0, f.x, f.y, r);
+    g.addColorStop(0, `hsla(${15 + f.life * 40}, 100%, ${50 + f.life * 40}%, ${f.life * 0.9})`);
+    g.addColorStop(1, "hsla(10, 100%, 50%, 0)");
+    fxCtx.globalAlpha = 1;
+    fxCtx.fillStyle = g;
+    fxCtx.beginPath();
+    fxCtx.arc(f.x, f.y, r, 0, Math.PI * 2);
+    fxCtx.fill();
+  }
+
+  fxCtx.globalCompositeOperation = "source-over";
+  for (let i = flowers.length - 1; i >= 0; i--) {
+    const f = flowers[i];
+    f.age++;
+    f.r += (f.maxR - f.r) * 0.12;   // 피어나는 애니메이션
+    f.rot += f.spin;
+    if (f.age > 70) f.life -= 0.02;
+    if (f.life <= 0) { flowers.splice(i, 1); continue; }
+    drawFlower(fxCtx, f);
+  }
+  for (let i = petals.length - 1; i >= 0; i--) {
+    const p = petals[i];
+    p.x += p.vx + Math.sin(p.rot * 2) * 0.6;
+    p.y += p.vy; p.vy += 0.04;
+    p.rot += p.vr;
+    p.life -= 0.008;
+    if (p.life <= 0 || p.y > fx.height + 20) { petals.splice(i, 1); continue; }
+    drawPetal(fxCtx, p);
+  }
+  fxCtx.globalAlpha = 1;
+}
+
+// ---------- 메인 루프 ----------
+let landmarker;
+let stable = { label: null, count: 0 };
+let lastFire = 0, lastBloom = 0;
+
+function resize() {
+  const w = innerWidth * devicePixelRatio, h = innerHeight * devicePixelRatio;
+  for (const c of [cam, fx]) { c.width = w; c.height = h; }
+}
+addEventListener("resize", resize);
+
+// 영상 비율을 유지하면서 화면을 꽉 채우는 배치 (object-fit: cover)
+function coverRect() {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const s = Math.max(cam.width / vw, cam.height / vh);
+  const w = vw * s, h = vh * s;
+  return { x: (cam.width - w) / 2, y: (cam.height - h) / 2, w, h };
+}
+
+function loop(now) {
+  requestAnimationFrame(loop);
+  if (video.readyState < 2) return;
+
+  // Python 수집 코드처럼 거울 모드 영상으로 검출해야 좌우/손 방향이 학습 데이터와 같아짐
+  if (mirror.width !== video.videoWidth) {
+    mirror.width = video.videoWidth; mirror.height = video.videoHeight;
+  }
+  mirrorCtx.setTransform(-1, 0, 0, 1, mirror.width, 0);
+  mirrorCtx.drawImage(video, 0, 0);
+
+  const r = coverRect();
+  camCtx.drawImage(mirror, r.x, r.y, r.w, r.h);
+
+  const result = landmarker.detectForVideo(mirror, now);
+  const toScreen = p => [r.x + p.x * r.w, r.y + p.y * r.h];
+
+  let bestLabel = null, bestProba = null, handPos = null, tips = null;
+  result.landmarks.forEach((lms, i) => {
+    const hand = result.handedness[i][0].categoryName;
+    const proba = predict(landmarksToFeatures(lms, hand));
+    const k = proba.indexOf(Math.max(...proba));
+    const label = proba[k] >= THRESHOLD ? model.classes[k] : null;
+
+    // 손 뼈대
+    camCtx.lineWidth = 3 * devicePixelRatio;
+    camCtx.strokeStyle = label ? COLORS[label] || "#fff" : "rgba(255,255,255,0.7)";
+    for (const [a, b] of HAND_CONNECTIONS) {
+      const [x1, y1] = toScreen(lms[a]), [x2, y2] = toScreen(lms[b]);
+      camCtx.beginPath(); camCtx.moveTo(x1, y1); camCtx.lineTo(x2, y2); camCtx.stroke();
+    }
+
+    // 효과를 낼 손 = 확률이 가장 높은 손
+    if (!bestProba || Math.max(...proba) > Math.max(...bestProba)) {
+      bestProba = proba; bestLabel = label;
+      handPos = toScreen(lms[9]);  // 손바닥 중심 근처 (중지 뿌리)
+      tips = [4, 8, 12, 16, 20].map(k => toScreen(lms[k]));  // 다섯 손가락 끝
+    }
+  });
+
+  updateBars(bestProba);
+
+  // 같은 제스처가 몇 프레임 이어져야 인정 (깜빡이는 오인식 방지)
+  if (bestLabel && bestLabel === stable.label) stable.count++;
+  else stable = { label: bestLabel, count: bestLabel ? 1 : 0 };
+  const active = stable.count >= STABLE_FRAMES ? stable.label : null;
+
+  bigEl.textContent = active && active !== "none" ? active.toUpperCase() : "";
+  bigEl.style.color = COLORS[active] || "#fff";
+
+  if (active === "ok" && now - lastFire > 450) {
+    lastFire = now;
+    firework(handPos[0], handPos[1]);
+    // 하늘에도 하나 더
+    firework(fx.width * (0.15 + Math.random() * 0.7), fx.height * (0.1 + Math.random() * 0.35));
+  }
+  if (active === "rock") {
+    for (const [x, y] of tips) flame(x, y);  // 매 프레임 손끝에서 불이 나옴
+  }
+  if (active === "heart" && now - lastBloom > 180) {
+    lastBloom = now;
+    bloom(handPos[0], handPos[1]);
+  }
+
+  stepEffects();
+}
+
+async function main() {
+  resize();
+  try {
+    model = await (await fetch("gesture_model.json")).json();
+    buildBars();
+
+    const fileset = await FilesetResolver.forVisionTasks(
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.0/wasm");
+    landmarker = await HandLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: "hand_landmarker.task", delegate: "GPU" },
+      runningMode: "VIDEO",
+      numHands: 2,
+    });
+
+    statusEl.textContent = "카메라 켜는 중…";
+    video.srcObject = await navigator.mediaDevices.getUserMedia({
+      video: { width: 1280, height: 720 }, audio: false });
+    await video.play();
+    statusEl.textContent = `인식 중 · ${model.classes.join(", ")}`;
+    requestAnimationFrame(loop);
+  } catch (err) {
+    console.error(err);
+    statusEl.textContent = `오류: ${err.message}`;
+  }
+}
+main();
+</script>
+</body>
+</html>
